@@ -1,0 +1,27 @@
+Package: AnalyzeVWC
+Title: Discretize High-Resolution Volumetric Water Content Data For Statistical Modeling
+Version: 0.1
+Authors@R: 
+    person(given = "Aurelie",
+           family = "Poncet",
+           role = c("aut", "cre"),
+           email = "email@institution.edu",
+           comment = c(ORCID = "0000-0002-0137-3023"))
+Description: A collection of functions to extract water infiltration and uptake information from high-resolution volumetric water content data collected at one or more depths across the soil profile. This package can be used to convert volumetric soil water content measurements into cumulative depths of water in the profile. It can also be used to automatically identify infiltration events within sensor data, characterize rainfall events, associate infiltration events to proper rainfall events, estimate daily uptake between infiltration events, and convert the results into a long dataset which can be used for statistical modeling.
+Depends: R (>= 3.6.1)
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.1
+Imports: 
+    imputeTS (>= 3.0),
+    tidyr (>= 0.8.3),
+    rlist (>= 0.4.6.2),
+    dplyr (>= 0.8.3),
+    signal (>= 0.7-6),
+    lubridate (>= 1.7.4)
+Suggests: 
+    knitr,
+    rmarkdown,
+    ggplot2

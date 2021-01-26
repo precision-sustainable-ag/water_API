@@ -1,0 +1,360 @@
+---
+title: "How to Use the AnalyzeVWC package to analyze high-resolution volumetric water content data."
+author: "Aurelie Poncet"
+date: "Last edited on: 2021-01-26"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This document explains how to use the `AnalyzeTDR` package to estimate water infiltration and uptake from high-resolution volumetric water content data.
+
+```{r message=FALSE}
+# Import required packages
+library(AnalyzeVWC)
+library(imputeTS)
+library(tidyr)
+library(rlist)
+library(dplyr)
+library(signal)
+library(tibble)
+library(lubridate)
+library(ggplot2)
+```
+
+# Dataset 1
+
+## Raw Data 
+
+Import the data.
+
+```{r}
+data(dataset1) 
+```
+
+Dataset1 has `r NROW(dataset1)` rows and `r NCOL(dataset1)` columns.
+
+```{r}
+head(dataset1) 
+```
+
+Data were collected in 2020 at the following coordinates: longitude = -85.4193 and latitude = 31.3995 [WGS84]. The experimental site was name *`r unique(dataset1$site)`* and data were collected across two treatments: *`r unique(dataset1$treatment)`*. TDR sensors were placed at *`r unique(dataset1$sensor_depth)`* to measure volumetric water content in each treatment.
+
+Data types are the following.
+Note that the timestamps are provided in the POSIXlt POSIXt format.
+Data were collected from `r as.Date(as.character(min(dataset1$date.time)))` to `r as.Date(as.character(max(dataset1$date.time)))`.
+
+```{r}
+sapply(dataset1, class)
+```
+ 
+
+Raw data plot:
+```{r include=FALSE}
+theme <- theme(legend.position = "bottom",
+               panel.background = element_rect(fill=NA, color="grey15"),
+               axis.title.x = element_blank(),
+               axis.title.y = element_text(size=12, face="bold"),
+               axis.text = element_text(size=10.5),
+               strip.background = element_rect(fill=NA),
+               strip.text = element_text(size=12, face="bold"),
+               legend.key = element_rect(fill=NA),
+               legend.title = element_text(size=12, face="bold"),
+               legend.text = element_text(size=11.5),
+               panel.grid.minor = element_blank(), 
+               panel.grid.major = element_blank())
+```
+
+
+```{r}
+
+## Format data for plotting
+data.plot <- dataset1[order(dataset1$site, dataset1$treatment, dataset1$sensor_depth, dataset1$date.time),] # order observations
+data.plot$relativetime <- as.numeric(difftime(data.plot$date.time, min(data.plot$date.time), unit="hours"))+1 # calculate relative time
+
+## Plot raw data
+ggplot(data=data.plot, aes(x=relativetime, y=vwc, group=as.character(sensor_depth)))+
+  geom_line(size=0.5, linetype="dashed")+
+  geom_point(size=1, aes(color=as.character(sensor_depth))) +
+  ylab("Volumetric Water Content")+
+  facet_wrap(~treatment, ncol=1, scales="free")+
+  scale_color_manual(values=c("#1E88E5","#FFC107","#004D40"),name="Sensor Depth:")+
+  scale_y_continuous(limits=c(0,5*ceiling(max(data.plot$vwc/5))), breaks = seq(0,5*ceiling(max(data.plot$vwc/5)),by=5))+
+  scale_x_continuous(limits=c(1,max(data.plot$relativetime)), breaks=seq(1,max(data.plot$relativetime),by=24*30), label = as.Date(as.character(seq(min(data.plot$date.time),max(data.plot$date.time),by="30 days"))))+
+  theme
+  
+```
+
+
+## Identify Infiltration Events
+### Interpolate Missing Volumetric Water Content Values in Deeper Depths
+
+The `InterpolateMissingVWCData()` function allows the user to interpolate missing volumetric water content data up to a user defined number of time periods, if little variability among the measurements is expected.
+
+For this example, we chose to interpolate the missing volumetric water data if:
+
+  - no more than 4 hours of data are missing at 15 cm depths,
+  - no more than 12 hours of data are missing at 45 cm depths,
+  - independently from the number of hours missing at 80 cm depth.   
+
+
+```{r}
+interpolated1 <- InterpolateMissingVWCData(data = dataset1, temp.resolution = 1, temp.unit = "hours", time.col = 3, response.col = 5, design.col = c(1,2), depth.col = 4, depths.values = c(-15, -45, -80), missing.max.time.by.depth = c(4,12,NA))
+```
+
+### Calculate Cumulative Depth of Water Across the Soil Profile
+
+The cumulative depth of water content is calculated using a weighted average of volumetric water content data. Coefficients of the weighted average calculation are determined based on the installation depth of the sensors and the user-defined soil profile boundaries, depth increments, and thickness of soil affecting the sensor measurement.
+
+For this example, sensors were placed at 15, 45, and 80 cm depth across the profile. We want to calculate water availability from 10 and 85 cm depth. The weighted average coefficients are calculated using a 5 cm increment. Sensors were placed vertically in the soil and sensor height was 10 cm. 
+
+```{r}
+cumuldepth1 <- CalculateCumulativeWaterDepth(data = interpolated1, design.col = c(1,2), time.col = 3, depth.col = 4, response.col = 5, profile.min = -85, profile.max = -10, increment = 5, sensor.height = 10, divideby100 = T)
+```
+
+The weighted average coefficients defined to calculate available water from 10 to 85 cm depth can be extracted from the results as follow. The `layer.low` and `layer.high` columns indicate the bottom and top depth of the soil layer. Values in `D*` columns correspond to the weighted coefficient associated with each depth for each layer. The provided depths values were ordered from the lowest to the highest value, and D1 correspons to the deepest sensor depth if negative depth values were provided, and to the shallowest sensor depth if positive values were provided.
+
+```{r}
+print(cumuldepth1[[1]])
+```
+
+The calculated water availability can be extracted from the results as follow. Results are provided in the `cumul.depth` column.
+
+```{r}
+cumuldepth.values1 <- cumuldepth1[[2]]
+head(cumuldepth.values1)
+```
+
+Plot of available water data:
+
+```{r}
+## Format data for plotting
+data.plot <- cumuldepth.values1[order(cumuldepth.values1$site, cumuldepth.values1$treatment, cumuldepth.values1$time),] # order observations
+data.plot$relativetime <- as.numeric(difftime(data.plot$time, min(data.plot$time), unit="hours"))+1 # calculate relative time
+
+## Plot raw data
+ggplot(data=data.plot[!is.na(data.plot$cumul.depth),], aes(x=relativetime, y=cumul.depth))+
+  geom_line(size=0.5, linetype="dashed")+
+  geom_point(size=1) +
+  ylab("Available Water from 10 to 85 cm depth [cm]")+
+  facet_wrap(~treatment, ncol=1, scales="free")+
+  scale_y_continuous(limits=c(0,2*ceiling(max(data.plot$cumul.depth[!is.na(data.plot$cumul.depth)]/2))), breaks = seq(0,2*ceiling(max(data.plot$cumul.depth[!is.na(data.plot$cumul.depth)]/2)),by=2))+
+  scale_x_continuous(limits=c(1,max(data.plot$relativetime)), breaks=seq(1,max(data.plot$relativetime),by=24*30), label = as.Date(as.character(seq(min(data.plot$time),max(data.plot$time),by="30 days"))))+
+  theme
+  
+```
+
+### Divide Cumulative Depth of Water Data into Contignuous Chunks 
+
+The time series representing the amount of available water in the soil profile must be divided into chunks of continuous data to facilitate data handling and identification of infiltration peaks. In this example, we decided to only keep chunks with at least 12 hours of continuous data.
+
+```{r}
+cumul.chunks1 <- DivideIntoChunks(data = cumuldepth.values1, design.col = c(1:2), time.col = 3, response.col = 7, min.successive.obs=12, time.interval = 1, time.unit = "hour")
+```
+
+Plot identified chunks of data:
+
+```{r}
+# format data for plotting
+data.plot <- c()
+counter <- 1
+for(item in 1:length(cumul.chunks1)){ # begin iteration over items
+  for (chunk in 1:length(cumul.chunks1[[item]])){ # begin iteration over chunks in item
+    
+    if(length(data.plot)==0){
+      data.plot <- data.frame(cumul.chunks1[[item]][chunk])
+      data.plot$chunkid <- counter; counter <- counter + 1
+    } else {
+      temp <- data.frame(cumul.chunks1[[item]][chunk])
+      temp$chunkid <- counter
+      counter <- counter + 1; data.plot <- rbind(data.plot, temp)
+    }
+    
+  } # end iteration over chunks in item
+} # end iteration over items
+
+data.plot$relativetime <- as.numeric(difftime(data.plot$time, min(data.plot$time), unit="hours"))+1 # calculate relative time
+data.plot <- within(data.plot, chunkid <- as.factor(chunkid))
+
+# plot results
+ggplot(data=data.plot, aes(x=relativetime, y=cumul.depth, group=chunk))+
+  geom_line(size=0.5, linetype="dashed")+
+  geom_point(size=1, aes(color=chunkid)) +
+  ylab("Available Water from 10 to 85 cm depth [cm]")+
+  facet_wrap(~treatment, ncol=1, scales="free") +
+  scale_color_manual(values=c("#543005","#8C510A","#BF812D","#DFC27D","#F6E8C3","#C7EAE5","#80CDC1","#35978F","#01665E","#003C30"), name = "Individual chunks:")+
+  scale_y_continuous(limits=c(0,2*ceiling(max(data.plot$cumul.depth[!is.na(data.plot$cumul.depth)]/2))), breaks = seq(0,2*ceiling(max(data.plot$cumul.depth[!is.na(data.plot$cumul.depth)]/2)),by=2))+
+  scale_x_continuous(limits=c(1,max(data.plot$relativetime)), breaks=seq(1,max(data.plot$relativetime),by=24*30), label = as.Date(as.character(seq(min(data.plot$time),max(data.plot$time),by="30 days"))))+
+  theme
+```
+
+### Filter Data for High Frequency Noise 
+
+Data within each chunks can be filtered for high frequency noise using one or multiple 6-point Savitzky-Golay filters. In this example, we filter the collected data using two consecutive filters.
+
+```{r}
+filter.chunks1 <- FilterWCData(data=cumul.chunks1, response.col = 7, nb.gs.filters = 2)
+```
+
+The filtered water availability data can be extracted from the results as follow. Results are provided in the `cumul.filter` column. Note that the first and last 6 observations for each chunk have *NULL* `cumul.filter` values.
+
+```{r}
+example <- data.frame(filter.chunks1[[1]][1])
+head(example[!is.na(example$cumul.filter),])
+```
+
+
+Plot filtered versus unfiltered data:
+
+```{r}
+# format data for plotting
+data.plot <- c()
+counter <- 1
+for(item in 1:length(filter.chunks1)){ # begin iteration over items
+  for (chunk in 1:length(filter.chunks1[[item]])){ # begin iteration over chunks in item
+    
+    if(length(data.plot)==0){
+      data.plot <- data.frame(filter.chunks1[[item]][chunk])
+    } else {
+      temp <- data.frame(filter.chunks1[[item]][chunk])
+      data.plot <- rbind(data.plot, temp)
+    }
+    
+  } # end iteration over chunks in item
+} # end iteration over items
+
+data.plot$relativetime <- as.numeric(difftime(data.plot$time, min(data.plot$time), unit="hours"))+1 # calculate relative time
+data.plot <- within(data.plot, delta.depth <- cumul.filter - cumul.depth) # calculate difference between original and filtered data
+data.plot <- data.plot[!is.na(data.plot$delta.depth),]
+data.plot <- within(data.plot, y <- cumul.filter - mean(cumul.filter))
+
+# plot results
+ggplot(data=data.plot[!is.na(data.plot$delta.depth),], aes(x=relativetime, y=cumul.filter))+
+  geom_line(size=0.5, linetype="dashed")+
+  geom_point(size=1, aes(color="Filtered Data")) +
+  geom_line(size=0.5, linetype="dotted", aes(y=delta.depth, color = 'Difference between filtered and original data'))+
+  ylab("Available Water from 10 to 85 cm depth [cm]")+
+  facet_wrap(~treatment, ncol=1, scales="free") +
+  scale_color_manual(values=c("darkred","black"), name = "")+
+  scale_y_continuous(limits=c(-2.5,2*ceiling(max(data.plot$cumul.filter[!is.na(data.plot$cumul.filter)]/2))), breaks = seq(-2,2*ceiling(max(data.plot$cumul.filter[!is.na(data.plot$cumul.filter)]/2)),by=2))+
+  scale_x_continuous(limits=c(1,max(data.plot$relativetime)), breaks=seq(1,max(data.plot$relativetime),by=24*30), label = as.Date(as.character(seq(min(data.plot$time),max(data.plot$time),by="30 days"))))+
+  theme
+```
+
+
+### Identify Infiltration Events
+
+Infiltration events were identified using the following methodology. 
+
+  1. Data were filtered using a very rough Butterwork filter or order *n* (*n=2* by ddefault) and critical frequency *w* (*w=0.075* by default, and *w=0.065* in this example).
+  2. Local minimums and maximums were identified within the roughly filtered data.
+  3. Results were cleaned and corresponding true local minimums and maximums were identified in the original data. 
+  
+```{r}
+peaks1 <- IdentifyInfiltrationEvents(data = filter.chunks1, time.col = 3, design.col = c(1,2),
+                                     response.col = 8, butter.n = 2, butter.w = 0.065,
+                                     sensitivity = 0.08, approx.delay = 8, temp.resolution = 1,
+                                     temp.unit = "hour")
+```
+
+  
+Illustration of the intermediate steps of the methodology is provided below.
+
+**Intermediate results:**  
+The red dots identify the intermediate local minimums.
+The blue dots identify the intermeddiate local maximum.
+
+```{r}
+## Import data
+data("intermediate.res.butter")
+
+## Format data for plotting
+peaks.plot <- merge(butter.peaks, butter.filtered.data, by=c('site', 'treatment', 'chunkid','value'))
+peaks.plot$time <- as.POSIXlt(peaks.plot$time, tz='GMT')
+butter.filtered.data$time <- as.POSIXlt(butter.filtered.data$time, tz='GMT')
+butter.filtered.data$relativetime <- as.numeric(difftime(butter.filtered.data$time, min(butter.filtered.data$time), unit="hours"))+1 
+peaks.plot$relativetime <- as.numeric(difftime(peaks.plot$time, min(butter.filtered.data$time), unit="hours"))+1 
+
+
+# plot results
+ggplot(data=butter.filtered.data, aes(x=relativetime, y=cumul.filter, group=chunkid))+
+  geom_line(size=0.5, linetype="dashed")+
+  geom_point(size=1, aes(color="Original data provided to the algorithm")) +
+  geom_line(size=0.35, linetype = 'solid', aes(y=butter.filter, color="Roughly filtered data"))+
+  geom_point(data=peaks.plot[peaks.plot$minormax == 'min',], aes(y=butter.filter), color="#D72809", size=1.15)+
+  geom_point(data=peaks.plot[peaks.plot$minormax == 'max',], aes(y=butter.filter), color="#0980D7", size=1.15)+
+  ylab("Available Water from 10 to 85 cm depth [cm]")+
+  facet_wrap(~treatment, ncol=1, scales="free") +
+  scale_color_manual(values=c("black","#25AD57"), name = "")+
+  scale_y_continuous(limits=c(0,2*ceiling(max(butter.filtered.data$cumul.filter[!is.na(butter.filtered.data$cumul.filter)]/2))), breaks = seq(-2,2*ceiling(max(butter.filtered.data$cumul.filter[!is.na(butter.filtered.data$cumul.filter)]/2)),by=2))+
+  scale_x_continuous(limits=c(1,max(butter.filtered.data$relativetime)), breaks=seq(1,max(butter.filtered.data$relativetime),by=24*30), label = as.Date(as.character(seq(min(butter.filtered.data$time),max(butter.filtered.data$time),by="30 days"))))+
+  theme
+```
+
+**Final results:**  
+The red dots identify the final local minimums.
+The blue dots identify the final local maximums.
+
+```{r}
+## create dataset for plotting
+data.plot <- c()
+counter <- 1
+for(item in 1:length(filter.chunks1)){ # begin iteration over items
+  for (chunk in 1:length(filter.chunks1[[item]])){ # begin iteration over chunks in item
+    
+    if(length(data.plot)==0){
+      data.plot <- data.frame(filter.chunks1[[item]][chunk])
+    } else {
+      temp <- data.frame(filter.chunks1[[item]][chunk])
+      data.plot <- rbind(data.plot, temp)
+    }
+    
+  } # end iteration over chunks in item
+} # end iteration over items
+
+data.plot$relativetime <- as.numeric(difftime(data.plot$time, min(data.plot$time), unit="hours"))+1 # calculate relative time
+
+peaks1$time.min <- as.POSIXlt(peaks1$time.min, tz='GMT') # convert character into timestamp
+peaks1$time.max <- as.POSIXlt(peaks1$time.max, tz='GMT') # convert characcter into timestamp
+
+peaks1$relativetime.min <- as.numeric(difftime(peaks1$time.min, min(data.plot$time), unit="hours"))+1 # calculate relative time
+peaks1$relativetime.max <- as.numeric(difftime(peaks1$time.max, min(data.plot$time), unit="hours"))+1
+
+# identify active infiltration
+data.plot$active.infiltration <- "No"
+for(row in 1:NROW(peaks1)){
+  data.plot$active.infiltration[data.plot$relativetime >= peaks1$relativetime.min[row] & data.plot$relativetime <= peaks1$relativetime.max[row]] <- "Yes"
+}
+
+# plot results
+ggplot(data=data.plot[!is.na(data.plot$cumul.filter),], aes(x=relativetime, y=cumul.filter))+
+  geom_line(size=0.25, linetype="dashed")+
+  geom_point(size=1, aes(color=active.infiltration)) +
+  geom_point(data=peaks1, aes(x=relativetime.min, y = depth.min), color="darkred")+
+  geom_point(data=peaks1, aes(x=relativetime.max, y = depth.max), color="#07713F")+
+  ylab("Available Water from 10 to 85 cm depth [cm]")+
+  facet_wrap(~treatment, ncol=1, scales="free") +
+  scale_color_manual(values=c("black","#DD830A"), name="Active infiltration:")+
+  scale_y_continuous(limits=c(-2.5,2*ceiling(max(data.plot$cumul.filter[!is.na(data.plot$cumul.filter)]/2))), breaks = seq(-2,2*ceiling(max(data.plot$cumul.filter[!is.na(data.plot$cumul.filter)]/2)),by=2))+
+  scale_x_continuous(limits=c(1,max(data.plot$relativetime)), breaks=seq(1,max(data.plot$relativetime),by=24*30), label = as.Date(as.character(seq(min(data.plot$time),max(data.plot$time),by="30 days"))))+
+  theme
+```
+
+## Associate infiltration events to rainfall events.
+
+### Estimate Infiltration Rate
+
+
+
+
+
+
+
+
